@@ -9,8 +9,8 @@ Ce README sert de **journal de bord** : chaque étape réalisée y est décrite 
 | Membre | Rôle principal |
 |--------|----------------|
 | Lucas (capitaine) | Coordination, rapport, schémas, appui Sec |
-| Lucien | Ops – serveurs de production et CI/CD (SSH, iptables, installation des services) |
-| Ayoub | Dev – configuration Jenkins / Nexus / SonarQube et pipeline |
+| Lucien | Ops – serveurs de production et CI/CD (SSH, iptables, installation des services) ; héberge la VM prod |
+| Ayoub | Dev – configuration Jenkins / Nexus / SonarQube et pipeline ; héberge la VM CI/CD |
 | Steven | Sec – analyse SonarQube, tests OWASP, rapport de failles |
 
 Tout le monde doit comprendre l'ensemble du projet (QCM final et rapport commun) : chaque étape est expliquée dans le journal ci-dessous.
@@ -20,7 +20,8 @@ Tout le monde doit comprendre l'ensemble du projet (QCM final et rapport commun)
 - Toujours faire `git pull` avant de modifier un fichier, puis un commit par étape avec un message clair.
 - Chaque étape terminée est documentée dans le **Journal de bord** : objectif, commandes, fichiers modifiés, problèmes rencontrés, captures.
 - Les fichiers de configuration finaux sont rangés dans `prod/`, `cicd/` ou `pipeline/` : ils permettent de réinstaller un serveur rapidement si quelque chose casse.
-- Sauvegardes : volumes de démarrage sauvegardés côté Oracle Cloud à chaque étape majeure, en plus de ce dépôt.
+- Sauvegardes : ce dépôt (configs et scripts de réinstallation) et une copie locale ; snapshots des disques Azure aux étapes majeures si les crédits le permettent.
+- Les VM Azure sont **éteintes après chaque séance** pour économiser les crédits.
 
 ## Architecture
 
@@ -29,7 +30,7 @@ Tout le monde doit comprendre l'ensemble du projet (QCM final et rapport commun)
 | `prod` | Production | SSH, iptables, JRE 17, PostgreSQL 15, nginx (reverse proxy), service systemd |
 | `cicd` | Intégration / livraison continue | SSH, iptables, Jenkins, SonarQube, Nexus 3, Maven, JDK 17, git, nginx (reverse proxy) |
 
-Hébergement : Oracle Cloud (Always Free, Ampere A1), Debian 12.
+Hébergement : Azure for Students (une VM par compte étudiant), Debian 12 x86_64. Détails et justification : voir l'étape 0.
 
 _Schéma d'architecture à ajouter._
 
@@ -66,42 +67,58 @@ Statuts possibles : À faire · Commencé · En cours · À faire vérifier · V
 
 ### Étape 0 – Choix de l'hébergement et du système
 
-**Statut : compte Oracle créé (région France Central – Paris), VM à faire.**
+**Statut : hébergement choisi (Azure for Students), création des VM en cours.**
 
-Le compte démarre avec un essai de 30 jours (300 $ de crédits), puis bascule automatiquement en *Always Free*. Nos ressources restent dans les limites gratuites : elles sont conservées après l'essai et rien n'est facturé. La région d'origine (*home region*) est définitive : c'est la seule où les ressources gratuites peuvent être créées.
+#### Ce dont on a besoin
+Deux serveurs Linux sans interface graphique, accessibles depuis Internet :
 
-![Console Oracle Cloud après création du compte](captures/01-oracle-console-accueil.png)
+| VM | Rôle | Taille visée | Hébergée sur le compte de |
+|----|------|--------------|---------------------------|
+| `truitteur-prod` | Production | 2 vCPU, 8 Go de RAM (Standard_B2ms), disque 64 Go | Lucien |
+| `truitteur-cicd` | CI/CD (Jenkins, SonarQube, Nexus) | 4 vCPU, 16 Go de RAM (Standard_B4ms), disque 64 Go | Ayoub |
 
-#### Qu'est-ce qu'Oracle Cloud ?
-Oracle Cloud Infrastructure (OCI) est le cloud public d'Oracle. Il fonctionne en *IaaS* (Infrastructure as a Service) : on loue des machines virtuelles, du stockage et du réseau, et on gère nous-mêmes le système et les logiciels installés dessus. Les briques OCI que nous utilisons :
-- **Compute** : les machines virtuelles (instances) ;
-- **VCN** (Virtual Cloud Network) : le réseau privé virtuel dans lequel les VM sont placées ;
-- **Security Lists** : un pare-feu géré par Oracle, en amont des VM. Il s'ajoute au pare-feu iptables de chaque VM (défense en profondeur) ;
-- **Boot volume backups** : les sauvegardes des disques des VM.
+La VM CI/CD a besoin de plus de mémoire : SonarQube et Nexus consomment chacun 2 à 4 Go.
 
-#### Pourquoi Oracle Cloud ?
-Le professeur nous a laissé libres du choix de la plateforme. Nous avons comparé les offres gratuites accessibles à des étudiants :
+#### Première tentative : Oracle Cloud (abandonnée)
+Oracle Cloud Infrastructure (OCI) est le cloud public d'Oracle, en mode *IaaS* (on loue des VM, du stockage et du réseau, et on gère nous-mêmes le système). Son offre *Always Free* était la plus généreuse : 4 cœurs ARM, 24 Go de RAM et 200 Go de disque gratuits sans limite de durée [1].
 
+Ce que nous avons fait :
+1. Création du compte (région France Central – Paris), possible sans carte bancaire grâce à l'adresse e-mail de l'école ;
+2. Import de l'image officielle Debian 12 *genericcloud arm64* (Debian n'est pas dans les images de base d'Oracle) : dépôt dans un *bucket* Object Storage, puis import en image personnalisée, en passant le firmware en **UEFI_64** (obligatoire pour les processeurs ARM) ;
+3. Création du réseau avec l'assistant VCN (*VCN with Internet Connectivity*) : le formulaire de création de VM ne permettait pas d'attribuer une IP publique sur un subnet créé à la volée ;
+4. Création de la VM : **échec « Out of capacity »**. La région Paris (un seul *availability domain*) n'avait plus de processeurs ARM gratuits disponibles.
+
+![Console Oracle Cloud](captures/01-oracle-console-accueil.png)
+![Image Debian déposée dans le bucket](captures/02-oracle-bucket-image-debian.png)
+![Image personnalisée en UEFI_64](captures/03-oracle-image-debian-uefi.png)
+![Réseau virtuel créé](captures/04-oracle-vcn.png)
+![Erreur de capacité à la création de la VM](captures/05-oracle-erreur-out-of-capacity.png)
+
+Pour débloquer la situation, Oracle propose de passer le compte en *Pay As You Go* (comptes prioritaires sur la capacité). Nous l'avons écarté : cela demande une carte bancaire avec une pré-autorisation de 100 $ [4], et Oracle ne permet pas de plafonner les dépenses (les budgets envoient seulement des alertes). Le compte Oracle est conservé, il ne coûte rien.
+
+#### Choix retenu : Azure for Students
 | Plateforme | Offre | Limites pour notre projet |
 |------------|-------|---------------------------|
-| **Oracle Cloud (Always Free)** | 4 OCPU ARM + 24 Go de RAM + 200 Go de disque, **gratuit sans limite de durée** [1] | Carte bancaire demandée pour la vérification d'identité (non débitée) ; processeurs ARM |
-| Azure for Students | 100 $ de crédits sur 12 mois, sans carte [3] | Crédits épuisés en quelques mois avec 2 VM de 8 Go ou plus |
-| AWS / Google Cloud | Offres gratuites limitées à de petites VM (≈1 Go de RAM) | Insuffisant pour Jenkins + SonarQube + Nexus |
+| **Azure for Students** | 100 $ de crédits par étudiant sur 12 mois, **sans carte bancaire** [3] | Crédits limités : il faut éteindre les VM quand on ne travaille pas |
+| Oracle Cloud (Always Free) | 4 OCPU ARM + 24 Go + 200 Go, gratuit sans limite de durée [1] | Pas de capacité disponible à Paris ; déblocage payant |
+| AWS / Google Cloud | Petites VM gratuites (≈1 Go de RAM) | Insuffisant, carte bancaire obligatoire |
 | DigitalOcean (GitHub Student Pack) | Offre étudiante arrêtée en juillet 2026 | Plus disponible |
 
-Oracle est la seule offre **permanente** et assez grande pour nos deux serveurs : les deux VM tiennent dans un seul compte (8 Go + 16 Go = 24 Go de RAM). La VM CI/CD reçoit plus de mémoire parce que SonarQube et Nexus sont gourmands.
+Pourquoi Azure for Students :
+- **Aucun risque de facturation** : sans carte bancaire, l'abonnement est simplement désactivé quand les crédits sont épuisés [3] ;
+- **Disponible immédiatement**, sans problème de capacité ;
+- **Processeurs x86** : aucun doute de compatibilité pour SonarQube et Nexus ;
+- **Une VM par compte** : la prod est sur le compte de Lucien et la CI/CD sur celui d'Ayoub, soit 200 $ de crédits au total (Steven et Lucas gardent leurs 100 $ en réserve).
 
-Points de vigilance :
-- **Architecture ARM** (Ampere A1) : il faudra vérifier que SonarQube et Nexus 3 fonctionnent bien sur ARM64 avant de les installer ;
-- **Capacité** : Oracle peut refuser de créer une VM ARM si la région est saturée (« Out of capacity ») ;
-- **Pas de SLA** : l'offre gratuite n'a aucune garantie de disponibilité, d'où l'intérêt des sauvegardes.
+Gestion des crédits (≈0,094 $/h pour une B2ms et ≈0,19 $/h pour une B4ms à France Central [5]) :
+- les VM sont **arrêtées (désallouées) quand on ne travaille pas** : le calcul n'est alors plus facturé, seul le disque l'est ;
+- un **arrêt automatique** est programmé chaque soir ;
+- estimation pour ~100 h d'utilisation : ≈10 $ (prod) et ≈20 $ (CI/CD), disques compris.
 
 #### Pourquoi Debian 12 ?
 - **Les versions demandées par le sujet sont dans les dépôts officiels** : Debian 12 fournit directement OpenJDK 17 et PostgreSQL 15. Debian 13 fournit des versions plus récentes (Java 21, PostgreSQL 17) et nous obligerait à ajouter des dépôts tiers, ce qui élargit la chaîne de confiance ;
-- **Toujours maintenue** : le support standard de Debian 12 s'est terminé en juillet 2026, mais elle reçoit les correctifs de sécurité de l'équipe LTS jusqu'au 30 juin 2028, y compris sur ARM64 [2]. Cela couvre largement la durée du projet ;
-- **Distribution stable et répandue** sur les serveurs, très bien documentée.
-
-Debian n'étant pas proposée dans les images de base d'Oracle, nous importons l'image officielle *Debian 12 genericcloud arm64* comme image personnalisée.
+- **Toujours maintenue** : le support standard de Debian 12 s'est terminé en juillet 2026, mais elle reçoit les correctifs de sécurité de l'équipe LTS jusqu'au 30 juin 2028 [2]. Cela couvre largement la durée du projet ;
+- **Distribution stable et répandue** sur les serveurs, publiée officiellement par Debian sur Azure.
 
 #### Pourquoi sans interface graphique ?
 - **Surface d'attaque réduite** : moins de paquets installés, donc moins de failles potentielles et moins de mises à jour ;
@@ -115,3 +132,7 @@ Debian n'étant pas proposée dans les images de base d'Oracle, nous importons l
 [2] Debian, « Debian "bookworm" Release Information ». [En ligne]. Disponible : https://www.debian.org/releases/bookworm/
 
 [3] Microsoft, « Azure for Students ». [En ligne]. Disponible : https://azure.microsoft.com/en-us/pricing/offers/ms-azr-0170p/
+
+[4] Oracle, « Managing Account Upgrades and Payment Method », *Oracle Cloud Infrastructure Documentation*. [En ligne]. Disponible : https://docs.oracle.com/iaas/Content/Billing/Tasks/changingpaymentmethod.htm
+
+[5] AzureSpeed, « Azure VM pricing in France Central ». [En ligne]. Disponible : https://www.azurespeed.com/AzureVmPricing/Regions/francecentral
