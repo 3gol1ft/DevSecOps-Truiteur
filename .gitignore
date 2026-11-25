@@ -1,0 +1,14 @@
+# Ne jamais versionner de secrets
+*.pem
+*.key
+id_*
+!*.pub
+.env
+*.env
+secrets/
+*.tfstate
+
+# Divers
+.DS_Store
+Thumbs.db
+*.swp
