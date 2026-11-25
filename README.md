@@ -67,15 +67,15 @@ Statuts possibles : À faire · Commencé · En cours · À faire vérifier · V
 
 ### Étape 0 – Choix de l'hébergement et du système
 
-**Statut : hébergement choisi (Azure for Students), création des VM en cours.**
+**Statut : VM de production créée (Azure, France Central). VM CI/CD à créer.**
 
 #### Ce dont on a besoin
 Deux serveurs Linux sans interface graphique, accessibles depuis Internet :
 
 | VM | Rôle | Taille visée | Hébergée sur le compte de |
 |----|------|--------------|---------------------------|
-| `truitteur-prod` | Production | 2 vCPU, 8 Go de RAM (Standard_B2ms), disque 64 Go | Lucien |
-| `truitteur-cicd` | CI/CD (Jenkins, SonarQube, Nexus) | 4 vCPU, 16 Go de RAM (Standard_B4ms), disque 64 Go | Ayoub |
+| `truitteur-prod` | Production | 2 vCPU, 8 Go de RAM (Standard_D2as_v7, Spot), disque 64 Go SSD Standard | Lucien |
+| `truitteur-cicd` | CI/CD (Jenkins, SonarQube, Nexus) | 2 vCPU, 16 Go de RAM (Standard_E2as_v7, Spot, prévu), disque 64 Go | Ayoub |
 
 La VM CI/CD a besoin de plus de mémoire : SonarQube et Nexus consomment chacun 2 à 4 Go.
 
@@ -114,6 +114,31 @@ Gestion des crédits (≈0,094 $/h pour une B2ms et ≈0,19 $/h pour une B4ms à
 - les VM sont **arrêtées (désallouées) quand on ne travaille pas** : le calcul n'est alors plus facturé, seul le disque l'est ;
 - un **arrêt automatique** est programmé chaque soir ;
 - estimation pour ~100 h d'utilisation : ≈10 $ (prod) et ≈20 $ (CI/CD), disques compris.
+
+#### Les contraintes des abonnements Azure for Students
+La création de la VM a demandé plusieurs essais. Nous avons analysé l'abonnement avec Azure Cloud Shell (Azure CLI) :
+
+1. **Régions autorisées** : une stratégie Azure (*Allowed resource deployment regions*) limite les déploiements à 5 régions : Austria East, Denmark East, Norway East, France Central et Germany West Central ;
+2. **Quota global** : 6 cœurs par région (`cores`), plus 3 cœurs pour les VM Spot (`lowPriorityCores`) ;
+3. **Blocage croisé** :
+   - les familles qui ont un quota (B, Bsv2, Dv3, Dv4, Ev3…) sont marquées `NotAvailableForSubscription` dans toutes les régions autorisées ;
+   - les familles réellement disponibles (dernière génération **v7**) ont un quota standard de **0**.
+
+Impossible donc de créer une VM « classique ». La solution retenue est une **VM Spot** : elle utilise la capacité inutilisée d'Azure, à prix fortement réduit, et consomme le quota Spot (3 cœurs) au lieu du quota de la famille.
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Taille | `Standard_D2as_v7` (2 vCPU AMD, 8 Go) |
+| Région | France Central |
+| Image | Debian 12 Gen2 (`Debian:debian-12:12-gen2:latest`) |
+| Disque | 64 Go, SSD Standard |
+| Priorité | Spot, prix max = prix normal (`--max-price -1`), éviction = *Deallocate* |
+| Accès | Clé SSH uniquement (utilisateur `lucien`), port 22 ouvert dans le NSG |
+| Arrêt automatique | 23h (heure de Paris), notification par e-mail |
+
+Conséquence à connaître : Azure peut **reprendre une VM Spot** s'il a besoin de la capacité. Avec la politique *Deallocate*, la VM est seulement arrêtée et son disque est conservé : il suffit de la redémarrer. Pour un projet de cours, ce risque est acceptable.
+
+Le script [`prod/creer-vm-azure.sh`](prod/creer-vm-azure.sh) permet de recréer la VM à l'identique.
 
 #### Pourquoi Debian 12 ?
 - **Les versions demandées par le sujet sont dans les dépôts officiels** : Debian 12 fournit directement OpenJDK 17 et PostgreSQL 15. Debian 13 fournit des versions plus récentes (Java 21, PostgreSQL 17) et nous obligerait à ajouter des dépôts tiers, ce qui élargit la chaîne de confiance ;
