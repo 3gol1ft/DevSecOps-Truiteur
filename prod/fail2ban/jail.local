@@ -1,0 +1,10 @@
+# /etc/fail2ban/jail.local
+[DEFAULT]
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+# Debian 12 : pas de /var/log/auth.log, les journaux sont dans journald
+backend = systemd

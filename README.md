@@ -50,7 +50,7 @@ _Schéma d'architecture à ajouter._
 
 | Étape | Statut | Responsable |
 |-------|--------|-------------|
-| SSH | À faire | Lucien |
+| SSH | Validé (prod) | Lucien |
 | Iptables | À faire | Lucien |
 | Prod | À faire | Lucien |
 | Serveur CI/CD | À faire | Lucien / Ayoub |
@@ -164,6 +164,85 @@ J’ai configuré l’accès par clé SSH et limité le port 22 à mon adresse I
 ![Test de connexion SSH à la VM CI/CD](captures/08-ssh-cicd-verification.png)
 
 La prochaine étape sera de vérifier les réglages SSH sur Debian, puis de configurer iptables.
+### Étape 1 – Sécurisation de l'accès SSH (serveur de production)
+
+**Statut : validé sur `truitteur-prod`.**
+
+#### Objectif
+Le sujet demande « une connexion SSH configurée de manière sécurisée (pas d'accès au compte root, interdiction d'utiliser un mot de passe, connexion par clé SSH…) ». SSH est la seule porte d'administration du serveur : c'est la première chose qu'un attaquant essaie de forcer (bruteforce de mots de passe, connexion en root).
+
+#### Ce que nous avons mis en place
+| Mesure | Pourquoi |
+|--------|----------|
+| Clé SSH **ed25519 protégée par passphrase** | Algorithme moderne. La clé seule ne suffit pas : en cas de vol du fichier, il faut aussi la passphrase |
+| `PermitRootLogin no` | root existe sur toutes les machines : c'est le premier compte visé. On se connecte avec un utilisateur nominatif puis `sudo` (traçabilité) |
+| `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `AuthenticationMethods publickey` | Rend le bruteforce de mots de passe impossible |
+| `AllowUsers lucien` | Liste blanche des comptes autorisés (le compte de déploiement sera ajouté plus tard) |
+| `MaxAuthTries 3`, `LoginGraceTime 30`, `MaxStartups 10:30:60` | Limite les tentatives et les connexions non authentifiées simultanées |
+| `X11Forwarding`, `AllowAgentForwarding`, `AllowTcpForwarding`, `PermitTunnel` à `no` | Fonctions inutiles sur un serveur : elles pourraient servir de rebond à un attaquant |
+| `ClientAliveInterval 300` + `ClientAliveCountMax 2` | Coupe les sessions abandonnées après 10 minutes |
+| **fail2ban** (jail `sshd`) | Bannit pendant 1 h une IP qui échoue 5 fois en 10 min |
+| **unattended-upgrades** | Installe automatiquement les correctifs de sécurité Debian chaque jour |
+
+Nous n'avons pas modifié `/etc/ssh/sshd_config` : la configuration est dans un fichier séparé, `/etc/ssh/sshd_config.d/00-hardening.conf`. Avec OpenSSH, la **première** valeur lue l'emporte, et le préfixe `00-` garantit que nos réglages passent avant ceux d'Azure/cloud-init (`50-cloud-init.conf`).
+
+Sur Debian 12, les journaux d'authentification ne sont plus dans `/var/log/auth.log` mais dans *journald* : fail2ban doit donc utiliser `backend = systemd` (et le paquet `python3-systemd`).
+
+#### Fichiers
+- [`prod/ssh/00-hardening.conf`](prod/ssh/00-hardening.conf) → `/etc/ssh/sshd_config.d/00-hardening.conf`
+- [`prod/fail2ban/jail.local`](prod/fail2ban/jail.local) → `/etc/fail2ban/jail.local`
+- [`prod/apt/20auto-upgrades`](prod/apt/20auto-upgrades) → `/etc/apt/apt.conf.d/20auto-upgrades`
+- [`prod/setup-prod.sh`](prod/setup-prod.sh) : réapplique toute l'étape sur une VM neuve
+
+#### Méthode et précautions
+1. Vérification de la syntaxe avant application : `sudo sshd -t && sudo systemctl reload ssh` (`reload` ne coupe pas les sessions ouvertes) ;
+2. Une **session SSH gardée ouverte** pendant les tests, pour ne pas perdre l'accès en cas d'erreur ;
+3. Raccourci côté poste client dans `~/.ssh/config` (`Host prod`) : la connexion se fait avec `ssh prod`.
+
+#### Tests de validation
+| Test (depuis le poste client) | Résultat attendu | Résultat |
+|-------------------------------|------------------|----------|
+| `ssh prod` (clé + passphrase) | Connexion | ✅ Connexion |
+| `ssh -o PubkeyAuthentication=no prod` (mot de passe) | Refus | ✅ `Permission denied (publickey)` |
+| `ssh -i ~/.ssh/truitteur root@<IP>` | Refus | ✅ `Permission denied (publickey)` |
+| `sudo fail2ban-client status sshd` | Jail active | ✅ Jail `sshd` active, filtre journald |
+| `sudo unattended-upgrades --dry-run --debug` | Pas d'erreur | ✅ Exécution sans erreur, aucun paquet en attente |
+
+![Connexion par mot de passe refusée](captures/08-ssh-test-mot-de-passe-refuse.png)
+![Connexion root refusée](captures/09-ssh-test-root-refuse.png)
+
+<details>
+<summary>Sortie de l'installation de fail2ban et unattended-upgrades</summary>
+
+```
+lucien@truitteur-prod:~$ sudo systemctl enable --now fail2ban
+Synchronizing state of fail2ban.service with SysV service script with /lib/systemd/systemd-sysv-install.
+Executing: /lib/systemd/systemd-sysv-install enable fail2ban
+lucien@truitteur-prod:~$ sudo systemctl restart fail2ban
+lucien@truitteur-prod:~$ sudo fail2ban-client status sshd
+Status for the jail: sshd
+|- Filter
+|  |- Currently failed: 0
+|  |- Total failed:     0
+|  `- Journal matches:  _SYSTEMD_UNIT=sshd.service + _COMM=sshd
+`- Actions
+   |- Currently banned: 0
+   |- Total banned:     0
+   `- Banned IP list:
+lucien@truitteur-prod:~$ sudo apt install -y unattended-upgrades apt-listchanges
+unattended-upgrades is already the newest version (2.9.1+nmu3).
+apt-listchanges is already the newest version (3.24).
+lucien@truitteur-prod:~$ sudo unattended-upgrades --dry-run --debug 2>&1 | tail -5
+fetch.run() result: 0
+Packages blacklist due to conffile prompts: []
+No packages found that can be upgraded unattended and no pending auto-removals
+The list of kept packages can't be calculated in dry-run mode.
+```
+</details>
+
+#### Problème rencontré
+Des avertissements `perl: warning: Setting locale failed` apparaissent lors des commandes `apt`/`systemctl`. Cause : le client SSH transmet ses variables de langue (`LC_TIME=fr_FR.UTF-8`…) alors que la locale française n'est pas installée sur le serveur. Sans conséquence ; correction possible en générant la locale `fr_FR.UTF-8` sur le serveur.
+
 ## Sources
 
 [1] Oracle, « Oracle Cloud Infrastructure Free Tier », *Oracle Cloud Infrastructure Documentation*. [En ligne]. Disponible : https://docs.oracle.com/iaas/Content/FreeTier/freetier.htm
