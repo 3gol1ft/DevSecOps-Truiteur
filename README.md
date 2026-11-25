@@ -138,6 +138,11 @@ Impossible donc de créer une VM « classique ». La solution retenue est une **
 
 Conséquence à connaître : Azure peut **reprendre une VM Spot** s'il a besoin de la capacité. Avec la politique *Deallocate*, la VM est seulement arrêtée et son disque est conservé : il suffit de la redémarrer. Pour un projet de cours, ce risque est acceptable.
 
+Vérification après création (connexion SSH avec la clé, puis `cat /etc/os-release && free -h && df -h /`) : Debian 12 (bookworm), 7,8 Gio de RAM, disque NVMe de 63 Go.
+
+![VM truitteur-prod dans le portail Azure](captures/06-azure-vm-prod.png)
+![Vérification de la VM en SSH](captures/07-ssh-prod-verification.png)
+
 Le script [`prod/creer-vm-azure.sh`](prod/creer-vm-azure.sh) permet de recréer la VM à l'identique.
 
 #### Pourquoi Debian 12 ?
