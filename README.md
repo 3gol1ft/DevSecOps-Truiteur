@@ -211,6 +211,10 @@ Sur Debian 12, les journaux d'authentification ne sont plus dans `/var/log/auth.
 ![Connexion par mot de passe refusée](captures/08-ssh-test-mot-de-passe-refuse.png)
 ![Connexion root refusée](captures/09-ssh-test-root-refuse.png)
 
+Configuration **effectivement appliquée** par le serveur (`sshd -T` affiche la configuration finale après lecture de tous les fichiers) et état de fail2ban :
+
+![Configuration SSH effective et jail fail2ban](captures/10-ssh-config-effective-fail2ban.png)
+
 <details>
 <summary>Sortie de l'installation de fail2ban et unattended-upgrades</summary>
 
