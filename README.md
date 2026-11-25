@@ -66,7 +66,11 @@ Statuts possibles : À faire · Commencé · En cours · À faire vérifier · V
 
 ### Étape 0 – Choix de l'hébergement et du système
 
-**Statut : choix faits, création du compte Oracle et des VM à faire.**
+**Statut : compte Oracle créé (région France Central – Paris), VM à faire.**
+
+Le compte démarre avec un essai de 30 jours (300 $ de crédits), puis bascule automatiquement en *Always Free*. Nos ressources restent dans les limites gratuites : elles sont conservées après l'essai et rien n'est facturé. La région d'origine (*home region*) est définitive : c'est la seule où les ressources gratuites peuvent être créées.
+
+![Console Oracle Cloud après création du compte](captures/01-oracle-console-accueil.png)
 
 #### Qu'est-ce qu'Oracle Cloud ?
 Oracle Cloud Infrastructure (OCI) est le cloud public d'Oracle. Il fonctionne en *IaaS* (Infrastructure as a Service) : on loue des machines virtuelles, du stockage et du réseau, et on gère nous-mêmes le système et les logiciels installés dessus. Les briques OCI que nous utilisons :
