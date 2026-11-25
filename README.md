@@ -67,7 +67,7 @@ Statuts possibles : À faire · Commencé · En cours · À faire vérifier · V
 
 ### Étape 0 – Choix de l'hébergement et du système
 
-**Statut : VM de production créée (Azure, France Central). VM CI/CD à créer.**
+**Statut : VM de production créée (Azure, France Central). VM CI/CD créée et connexion SSH testée.**
 
 #### Ce dont on a besoin
 Deux serveurs Linux sans interface graphique, accessibles depuis Internet :
@@ -154,7 +154,16 @@ Le script [`prod/creer-vm-azure.sh`](prod/creer-vm-azure.sh) permet de recréer 
 - **Surface d'attaque réduite** : moins de paquets installés, donc moins de failles potentielles et moins de mises à jour ;
 - **Moins de ressources consommées**, laissées aux services du projet ;
 - **Administration uniquement par SSH**, ce qui est la norme pour un serveur et permet de tout scripter (réinstallation rapide).
+- 
+#### Création de la VM CI/CD
 
+J’ai créé la VM CI/CD sur Azure for Students, en France Central. Elle tourne sous Debian 12 sur une instance Spot avec 2 vCPU, 16 Gio de RAM et un SSD de 64 Gio.
+
+J’ai configuré l’accès par clé SSH et limité le port 22 à mon adresse IP dans Azure. J’ai testé la connexion depuis PowerShell et j’ai pu ouvrir un terminal sur la VM. Après le test, j’ai arrêté la VM depuis Azure pour économiser les crédits.
+
+![Test de connexion SSH à la VM CI/CD](captures/08-ssh-cicd-verification.png)
+
+La prochaine étape sera de vérifier les réglages SSH sur Debian, puis de configurer iptables.
 ## Sources
 
 [1] Oracle, « Oracle Cloud Infrastructure Free Tier », *Oracle Cloud Infrastructure Documentation*. [En ligne]. Disponible : https://docs.oracle.com/iaas/Content/FreeTier/freetier.htm
