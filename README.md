@@ -51,7 +51,7 @@ _Schéma d'architecture à ajouter._
 | Étape | Statut | Responsable |
 |-------|--------|-------------|
 | SSH | Validé (prod) | Lucien |
-| Iptables | À faire | Lucien |
+| Iptables | Validé (prod) | Lucien |
 | Prod | À faire | Lucien |
 | Serveur CI/CD | Commencé (VM créée) | Ayoub |
 | Jenkins | À faire | Ayoub |
@@ -247,6 +247,133 @@ The list of kept packages can't be calculated in dry-run mode.
 
 #### Problème rencontré
 Des avertissements `perl: warning: Setting locale failed` apparaissent lors des commandes `apt`/`systemctl`. Cause : le client SSH transmet ses variables de langue (`LC_TIME=fr_FR.UTF-8`…) alors que la locale française n'est pas installée sur le serveur. Sans conséquence ; correction possible en générant la locale `fr_FR.UTF-8` sur le serveur.
+
+### Étape 2 – Pare-feu iptables (serveur de production)
+
+**Statut : validé sur `truitteur-prod`.**
+
+#### Objectif
+Le sujet demande « un pare-feu iptables le moins permissif possible (tout en DROP et on n'autorise en entrée et sortie que ce dont on a besoin) ». Filtrer aussi la **sortie** limite ce qu'un attaquant peut faire s'il compromet l'application : impossible d'ouvrir un *reverse shell* vers un port arbitraire, d'exfiltrer des données en SSH ou de rebondir vers d'autres machines.
+
+#### Politique retenue
+| Sens | Autorisé | Justification |
+|------|----------|---------------|
+| Entrée | TCP 22 (SSH) | Administration ; déjà protégé par clé SSH + fail2ban |
+| Entrée | TCP 80 et 443 | Exposition de l'application via nginx (étape suivante) |
+| Sortie | TCP 80 et 443 | Mises à jour `apt` (les miroirs Debian n'ont pas d'IP fixe) |
+| Sortie | DNS (UDP/TCP 53) **uniquement vers 168.63.129.16** | Le résolveur DNS d'Azure : aucun autre serveur DNS n'est joignable (limite l'exfiltration par DNS) |
+| Sortie | UDP 123 | Synchronisation de l'heure (NTP) |
+| Sortie | ICMP *echo-request* | Ping de diagnostic (le ping **entrant** reste bloqué) |
+| Entrée/Sortie | DHCP (UDP 67/68), WireServer `168.63.129.16` (TCP 80, 32526), IMDS `169.254.169.254` (TCP 80) | **Services internes Azure** : sans eux, la VM ne renouvelle plus son adresse réseau et l'agent Azure ne fonctionne plus |
+| Entrée/Sortie | Interface `lo` | Communication locale : application ↔ PostgreSQL, nginx ↔ application |
+| Entrée/Sortie | État `ESTABLISHED,RELATED` | Réponses aux connexions autorisées (pare-feu à états, module `conntrack`) |
+| Entrée | État `INVALID` → DROP | Paquets incohérents (scans, paquets forgés) |
+| — | Tout le reste | **Journalisé** (5/min max, préfixes `IPT-DROP-IN` / `IPT-DROP-OUT`) puis **refusé** |
+
+IPv6 n'étant pas utilisé, sa politique est également DROP (seule la boucle locale est autorisée).
+
+Le piège des VM cloud : un pare-feu « tout en DROP » écrit pour un serveur physique bloque les services internes du fournisseur (DHCP, agent, DNS, métadonnées). La VM fonctionne quelques heures puis perd son réseau au renouvellement du bail DHCP. Nous avons donc identifié et autorisé explicitement ces services Azure.
+
+#### Défense en profondeur
+Deux pare-feu se superposent :
+1. le **NSG Azure** (Network Security Group), devant la VM : pour l'instant, seul le port 22 y est ouvert ;
+2. **iptables** sur la VM, qui filtre aussi les flux sortants (le NSG ne s'en occupe pas par défaut).
+
+Si l'un est mal configuré, l'autre protège encore la machine.
+
+#### Méthode et précautions
+- Outils installés **avant** de bloquer la sortie (`iptables-persistent` pour recharger les règles au démarrage) ;
+- Règles écrites dans un fichier (`/etc/iptables/rules.v4`), chargées d'un bloc avec `iptables-restore` ;
+- Application avec **`iptables-apply -t 120`** : les règles sont annulées automatiquement si l'administrateur ne confirme pas sous 120 s qu'une **nouvelle** connexion SSH fonctionne. Cela évite de perdre l'accès à la VM en cas d'erreur ;
+- Redémarrage de fail2ban après le chargement, pour qu'il réinsère ses propres règles de bannissement.
+
+#### Fichiers
+- [`prod/iptables/rules.v4`](prod/iptables/rules.v4) → `/etc/iptables/rules.v4`
+- [`prod/iptables/rules.v6`](prod/iptables/rules.v6) → `/etc/iptables/rules.v6`
+- [`prod/setup-prod.sh`](prod/setup-prod.sh) : étape ajoutée au script de réinstallation
+
+#### Tests de validation
+| Test | Résultat attendu | Résultat |
+|------|------------------|----------|
+| Nouvelle connexion `ssh prod` pendant `iptables-apply` | Connexion | ✅ |
+| `sudo apt update` (DNS Azure + HTTPS sortant) | Fonctionne | ✅ `All packages are up to date.` |
+| `ping -c 2 1.1.1.1` | Répond | ✅ 0 % de perte |
+| Connexion sortante vers `1.1.1.1:22` | Bloquée | ✅ `SORTIE 22 BLOQUEE` |
+| Journaux noyau `IPT-DROP` | Paquets refusés tracés | ✅ (voir ci-dessous) |
+| `nmap` depuis l'extérieur | Seul le 22 ouvert | ✅ 22 `open`, tout le reste `filtered` |
+
+Les ports 80 et 443 apparaissent `filtered` dans nmap : ils sont autorisés par iptables, mais encore fermés dans le NSG Azure et aucun service n'écoute derrière. Ils seront ouverts à l'étape nginx.
+
+![Scan nmap depuis l'extérieur](captures/11-iptables-nmap-externe.png)
+
+<details>
+<summary>Règles chargées (<code>iptables -L -n -v</code>) et sorties des tests</summary>
+
+```
+lucien@truitteur-prod:~$ sudo iptables -L -n -v --line-numbers | head -40
+Chain INPUT (policy DROP 0 packets, 0 bytes)
+num   pkts bytes target     prot opt in     out     source               destination
+1        0     0 ACCEPT     0    --  lo     *       0.0.0.0/0            0.0.0.0/0
+2      138 23308 ACCEPT     0    --  *      *       0.0.0.0/0            0.0.0.0/0            ctstate RELATED,ESTABLISHED
+3        0     0 DROP       0    --  *      *       0.0.0.0/0            0.0.0.0/0            ctstate INVALID
+4        0     0 ACCEPT     17   --  *      *       0.0.0.0/0            0.0.0.0/0            udp spt:67 dpt:68
+5        0     0 ACCEPT     6    --  *      *       0.0.0.0/0            0.0.0.0/0            tcp dpt:22 ctstate NEW
+6        0     0 ACCEPT     6    --  *      *       0.0.0.0/0            0.0.0.0/0            multiport dports 80,443 ctstate NEW
+7        0     0 LOG_DROP_IN  0    --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain FORWARD (policy DROP 0 packets, 0 bytes)
+num   pkts bytes target     prot opt in     out     source               destination
+
+Chain OUTPUT (policy DROP 0 packets, 0 bytes)
+num   pkts bytes target     prot opt in     out     source               destination
+1        0     0 ACCEPT     0    --  *      lo      0.0.0.0/0            0.0.0.0/0
+2      124 26929 ACCEPT     0    --  *      *       0.0.0.0/0            0.0.0.0/0            ctstate RELATED,ESTABLISHED
+3        0     0 ACCEPT     17   --  *      *       0.0.0.0/0            0.0.0.0/0            udp spt:68 dpt:67
+4       21  1260 ACCEPT     6    --  *      *       0.0.0.0/0            168.63.129.16        multiport dports 80,32526
+5        0     0 ACCEPT     17   --  *      *       0.0.0.0/0            168.63.129.16        udp dpt:53
+6        0     0 ACCEPT     6    --  *      *       0.0.0.0/0            168.63.129.16        tcp dpt:53
+7        1    60 ACCEPT     6    --  *      *       0.0.0.0/0            169.254.169.254      tcp dpt:80
+8        0     0 ACCEPT     6    --  *      *       0.0.0.0/0            0.0.0.0/0            multiport dports 80,443 ctstate NEW
+9        0     0 ACCEPT     17   --  *      *       0.0.0.0/0            0.0.0.0/0            udp dpt:123
+10       0     0 ACCEPT     1    --  *      *       0.0.0.0/0            0.0.0.0/0            icmptype 8
+11       0     0 LOG_DROP_OUT  0    --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain LOG_DROP_IN (1 references)
+num   pkts bytes target     prot opt in     out     source               destination
+1        0     0 LOG        0    --  *      *       0.0.0.0/0            0.0.0.0/0            limit: avg 5/min burst 5 LOG flags 0 level 4 prefix "IPT-DROP-IN: "
+2        0     0 DROP       0    --  *      *       0.0.0.0/0            0.0.0.0/0
+
+Chain LOG_DROP_OUT (1 references)
+num   pkts bytes target     prot opt in     out     source               destination
+1        0     0 LOG        0    --  *      *       0.0.0.0/0            0.0.0.0/0            limit: avg 5/min burst 5 LOG flags 0 level 4 prefix "IPT-DROP-OUT: "
+2        0     0 DROP       0    --  *      *       0.0.0.0/0            0.0.0.0/0
+
+lucien@truitteur-prod:~$ sudo apt update 2>&1 | tail -2
+Reading state information...
+All packages are up to date.
+
+lucien@truitteur-prod:~$ ping -c 2 1.1.1.1
+64 bytes from 1.1.1.1: icmp_seq=1 ttl=54 time=3.85 ms
+64 bytes from 1.1.1.1: icmp_seq=2 ttl=54 time=2.55 ms
+2 packets transmitted, 2 received, 0% packet loss, time 1002ms
+
+lucien@truitteur-prod:~$ timeout 5 bash -c 'echo > /dev/tcp/1.1.1.1/22' && echo "SORTIE 22 OUVERTE (anormal)" || echo "SORTIE 22 BLOQUEE (normal)"
+SORTIE 22 BLOQUEE (normal)
+
+lucien@truitteur-prod:~$ sudo journalctl -k --since "5 min ago" | grep IPT-DROP | tail -3
+nov. 26 12:30:20 truitteur-prod kernel: IPT-DROP-OUT: IN= OUT=eth0 SRC=10.0.0.4 DST=1.1.1.1 LEN=60 ... PROTO=TCP SPT=47332 DPT=22 ... SYN
+nov. 26 12:30:21 truitteur-prod kernel: IPT-DROP-OUT: IN= OUT=eth0 SRC=10.0.0.4 DST=1.1.1.1 LEN=60 ... PROTO=TCP SPT=47332 DPT=22 ... SYN
+nov. 26 12:30:23 truitteur-prod kernel: IPT-DROP-OUT: IN= OUT=eth0 SRC=10.0.0.4 DST=1.1.1.1 LEN=60 ... PROTO=TCP SPT=47332 DPT=22 ... SYN
+```
+</details>
+
+#### À compléter plus tard
+- Étape livraison : autoriser la VM CI/CD (son IP uniquement) à se connecter au compte de déploiement ;
+- Étape nginx : ouvrir 80/443 dans le NSG Azure ;
+- PostgreSQL n'écoutera que sur `127.0.0.1` : le port 5432 n'est **pas** ouvert dans iptables.
+
+#### Problème rencontré
+Les avertissements `perl: warning: Setting locale failed` (client SSH qui transmet `LC_*=fr_FR.UTF-8`) ont été supprimés en installant le paquet `locales` et en générant la locale `fr_FR.UTF-8`.
 
 ## Sources
 

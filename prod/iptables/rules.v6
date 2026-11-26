@@ -1,0 +1,8 @@
+# /etc/iptables/rules.v6 — IPv6 non utilisé : tout est refusé sauf la boucle locale
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT DROP [0:0]
+-A INPUT  -i lo -j ACCEPT
+-A OUTPUT -o lo -j ACCEPT
+COMMIT

@@ -1,0 +1,44 @@
+# /etc/iptables/rules.v4 — Pare-feu truitteur-prod : tout est refusé par défaut, entrée ET sortie
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT DROP [0:0]
+:LOG_DROP_IN - [0:0]
+:LOG_DROP_OUT - [0:0]
+
+# --- Boucle locale (app <-> PostgreSQL, nginx <-> app) ---
+-A INPUT  -i lo -j ACCEPT
+-A OUTPUT -o lo -j ACCEPT
+
+# --- Réponses aux connexions déjà autorisées ---
+-A INPUT  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT  -m conntrack --ctstate INVALID -j DROP
+
+# --- Services internes Azure (indispensables) ---
+# DHCP : attribution/renouvellement de l'adresse réseau
+-A INPUT  -p udp --sport 67 --dport 68 -j ACCEPT
+-A OUTPUT -p udp --sport 68 --dport 67 -j ACCEPT
+# WireServer (agent Azure + résolveur DNS) et IMDS (métadonnées)
+-A OUTPUT -d 168.63.129.16/32 -p tcp -m multiport --dports 80,32526 -j ACCEPT
+-A OUTPUT -d 168.63.129.16/32 -p udp --dport 53 -j ACCEPT
+-A OUTPUT -d 168.63.129.16/32 -p tcp --dport 53 -j ACCEPT
+-A OUTPUT -d 169.254.169.254/32 -p tcp --dport 80 -j ACCEPT
+
+# --- ENTRÉE : administration et site web ---
+-A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT
+-A INPUT -p tcp -m multiport --dports 80,443 -m conntrack --ctstate NEW -j ACCEPT
+
+# --- SORTIE : mises à jour (apt), heure (NTP), ping de diagnostic ---
+-A OUTPUT -p tcp -m multiport --dports 80,443 -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p udp --dport 123 -j ACCEPT
+-A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT
+
+# --- Tout le reste : journalisé (5/min max) puis refusé ---
+-A INPUT  -j LOG_DROP_IN
+-A OUTPUT -j LOG_DROP_OUT
+-A LOG_DROP_IN  -m limit --limit 5/min -j LOG --log-prefix "IPT-DROP-IN: " --log-level 4
+-A LOG_DROP_IN  -j DROP
+-A LOG_DROP_OUT -m limit --limit 5/min -j LOG --log-prefix "IPT-DROP-OUT: " --log-level 4
+-A LOG_DROP_OUT -j DROP
+COMMIT
