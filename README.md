@@ -164,6 +164,7 @@ La prochaine étape sera de vérifier les réglages SSH sur Debian, puis de conf
 - **Surface d'attaque réduite** : moins de paquets installés, donc moins de failles potentielles et moins de mises à jour ;
 - **Moins de ressources consommées**, laissées aux services du projet ;
 - **Administration uniquement par SSH**, ce qui est la norme pour un serveur et permet de tout scripter (réinstallation rapide).
+
 ### Étape 1 – Sécurisation de l'accès SSH (serveur de production)
 
 **Statut : validé sur `truitteur-prod`.**
