@@ -75,7 +75,7 @@ Deux serveurs Linux sans interface graphique, accessibles depuis Internet :
 | VM | Rôle | Taille visée | Hébergée sur le compte de |
 |----|------|--------------|---------------------------|
 | `truitteur-prod` | Production | 2 vCPU, 8 Go de RAM (Standard_D2as_v7, Spot), disque 64 Go SSD Standard | Lucien |
-| `truitteur-cicd` | CI/CD (Jenkins, SonarQube, Nexus) | 2 vCPU, 16 Go de RAM (Standard_E2as_v7, Spot, prévu), disque 64 Go | Ayoub |
+| `truitteur-cicd` | CI/CD (Jenkins, SonarQube, Nexus) | 2 vCPU, 16 Go de RAM (Standard_E2as_v7, Spot), disque 64 Go | Ayoub |
 
 La VM CI/CD a besoin de plus de mémoire : SonarQube et Nexus consomment chacun 2 à 4 Go.
 
@@ -300,6 +300,7 @@ Si l'un est mal configuré, l'autre protège encore la machine.
 | `ping -c 2 1.1.1.1` | Répond | ✅ 0 % de perte |
 | Connexion sortante vers `1.1.1.1:22` | Bloquée | ✅ `SORTIE 22 BLOQUEE` |
 | Journaux noyau `IPT-DROP` | Paquets refusés tracés | ✅ (voir ci-dessous) |
+| Redémarrage de la VM (`sudo reboot`) | Règles rechargées automatiquement | ✅ `policy DROP`, `netfilter-persistent` et `fail2ban` actifs |
 | `nmap` depuis l'extérieur | Seul le 22 ouvert | ✅ 22 `open`, tout le reste `filtered` |
 
 Les ports 80 et 443 apparaissent `filtered` dans nmap : ils sont autorisés par iptables, mais encore fermés dans le NSG Azure et aucun service n'écoute derrière. Ils seront ouverts à l'étape nginx.
