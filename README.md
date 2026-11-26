@@ -276,7 +276,7 @@ Le piège des VM cloud : un pare-feu « tout en DROP » écrit pour un serveur p
 
 #### Défense en profondeur
 Deux pare-feu se superposent :
-1. le **NSG Azure** (Network Security Group), devant la VM : pour l'instant, seul le port 22 y est ouvert ;
+1. le **NSG Azure** (Network Security Group), devant la VM : seuls les ports 22 et 80 y sont ouverts (80 ajouté à l'étape 3) ;
 2. **iptables** sur la VM, qui filtre aussi les flux sortants (le NSG ne s'en occupe pas par défaut).
 
 Si l'un est mal configuré, l'autre protège encore la machine.
@@ -370,7 +370,7 @@ nov. 26 12:30:23 truitteur-prod kernel: IPT-DROP-OUT: IN= OUT=eth0 SRC=10.0.0.4 
 
 #### À compléter plus tard
 - Étape livraison : autoriser la VM CI/CD (son IP uniquement) à se connecter au compte de déploiement ;
-- Étape nginx : ouvrir 80/443 dans le NSG Azure ;
+- Étape HTTPS : ouvrir 443 dans le NSG Azure (le 80 a été ouvert à l'étape 3) ;
 - PostgreSQL n'écoutera que sur `127.0.0.1` : le port 5432 n'est **pas** ouvert dans iptables.
 
 #### Problème rencontré
@@ -468,6 +468,15 @@ Permissions-Policy: geolocation=(), camera=(), microphone=()
 </details>
 
 Le **502 Bad Gateway** est attendu : nginx fonctionne et transmet bien les requêtes vers `127.0.0.1:8080`, mais l'application n'y est pas encore déployée.
+
+#### Ouverture du port 80 dans le NSG Azure
+Pour que le site soit joignable depuis Internet, une règle a été ajoutée au pare-feu Azure de la VM (`truitteur-prodNSG`) : **Allow-HTTP**, TCP 80, priorité 1010. Le formulaire Azure proposait par défaut le port **8080** avec le protocole **Any** : nous l'avons corrigé, car le 8080 est le port de l'application, qui ne doit jamais être exposé directement (tout passe par nginx). Le port 443 sera ouvert à l'étape HTTPS.
+
+![Règle NSG Allow-HTTP](captures/12-nsg-regle-allow-http.png)
+
+Test depuis l'extérieur : seuls les ports 22 et 80 sont ouverts ; HTTPS (pas encore configuré) et PostgreSQL restent filtrés. Le site répond (502 tant que l'application n'est pas déployée) sans divulguer la version de nginx.
+
+![nmap et curl depuis l'extérieur](captures/13-nmap-curl-http-ouvert.png)
 
 #### Problème rencontré
 `nginx -v` renvoyait `command not found` alors que le paquet était installé : sur Debian, nginx est dans `/usr/sbin`, qui n'est pas dans le `PATH` des utilisateurs non privilégiés. Il faut utiliser `sudo nginx -v`.
