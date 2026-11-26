@@ -52,7 +52,7 @@ _Schéma d'architecture à ajouter._
 |-------|--------|-------------|
 | SSH | Validé (prod) | Lucien |
 | Iptables | Validé (prod) | Lucien |
-| Prod | À faire | Lucien |
+| Prod | En cours (services installés, application à déployer) | Lucien |
 | Serveur CI/CD | Commencé (VM créée) | Ayoub |
 | Jenkins | À faire | Ayoub |
 | Sonar | À faire | Ayoub |
@@ -375,6 +375,102 @@ nov. 26 12:30:23 truitteur-prod kernel: IPT-DROP-OUT: IN= OUT=eth0 SRC=10.0.0.4 
 
 #### Problème rencontré
 Les avertissements `perl: warning: Setting locale failed` (client SSH qui transmet `LC_*=fr_FR.UTF-8`) ont été supprimés en installant le paquet `locales` et en générant la locale `fr_FR.UTF-8`.
+
+### Étape 3 – Services du serveur de production (Java, PostgreSQL, nginx)
+
+**Statut : services installés et testés. Le déploiement de l'application viendra avec la pipeline.**
+
+#### Objectif
+Le sujet demande sur la production : une JRE Java 17, un serveur PostgreSQL 15 et un nginx configuré en reverse proxy pour exposer l'application.
+
+#### Architecture sur la VM
+```
+Internet ──► NSG Azure ──► iptables ──► nginx :80 ──► Spring Boot 127.0.0.1:8080 ──► PostgreSQL 127.0.0.1:5432
+```
+Seul nginx est joignable depuis l'extérieur. L'application et la base n'écoutent que sur l'interface locale : même si le pare-feu était mal configuré, elles resteraient inaccessibles depuis Internet.
+
+#### Choix et justifications
+| Élément | Choix | Pourquoi |
+|---------|-------|----------|
+| Java | `openjdk-17-jre-headless` (17.0.21) | Un **JRE** suffit pour exécuter l'application : le compilateur (JDK) reste sur la CI/CD. *Headless* : pas de bibliothèques graphiques. Moins de paquets = moins de failles |
+| Base de données | `postgresql-15` (15.20), dépôts Debian officiels | Version exigée par le sujet, fournie directement par Debian 12 (correctifs de sécurité via Debian LTS) |
+| Écoute PostgreSQL | `127.0.0.1` et `::1` uniquement (défaut Debian, vérifié) | La base n'est jamais exposée au réseau |
+| Compte de base | Rôle `truitteur`, propriétaire de la base `truitteur` ; `REVOKE ALL ... FROM PUBLIC` | Moindre privilège : l'application n'utilise pas le super-utilisateur `postgres`, et aucun autre rôle n'a de droit sur la base |
+| Mot de passe de la base | Généré aléatoirement (`openssl rand -base64 24`), jamais affiché ni versionné | Stocké dans `/etc/truitteur/truitteur.env` (`root:truitteur`, droits `640`) : lisible uniquement par root et l'application |
+| Compte système | Utilisateur `truitteur`, shell `/usr/sbin/nologin` | L'application ne tournera pas en root ; ce compte ne permet aucune connexion interactive |
+| Reverse proxy | nginx 1.22.1 | Seul point d'entrée web ; l'application n'est jamais exposée directement |
+
+#### Durcissement de nginx
+| Réglage | Effet |
+|---------|-------|
+| `server_tokens off` | L'en-tête `Server` n'indique plus la version de nginx (pas d'aide à la recherche de failles connues) |
+| Site `default` supprimé | Aucune page par défaut exposée |
+| `X-Content-Type-Options: nosniff` | Le navigateur n'essaie pas de deviner le type des fichiers (attaques par confusion de type MIME) |
+| `X-Frame-Options: DENY` | Le site ne peut pas être affiché dans une iframe (*clickjacking*) |
+| `Referrer-Policy: strict-origin-when-cross-origin` | Limite les informations transmises aux sites externes |
+| `Permissions-Policy` | Désactive géolocalisation, caméra et micro |
+| `location ~ /\.` → `deny all` | Bloque l'accès aux fichiers cachés (`.git`, `.env`…) |
+| `location /actuator` → `deny all` | Bloque les endpoints techniques de Spring Boot, qui peuvent divulguer la configuration (OWASP A05 – mauvaise configuration de sécurité) |
+| `client_max_body_size 5m` | Limite la taille des requêtes |
+| En-têtes `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` | L'application connaît l'IP réelle du client (journaux, limitation de débit) |
+| Journaux dédiés | `/var/log/nginx/truitteur.access.log` et `truitteur.error.log` |
+
+#### Fichiers
+- [`prod/nginx/00-securite.conf`](prod/nginx/00-securite.conf) → `/etc/nginx/conf.d/00-securite.conf`
+- [`prod/nginx/truitteur`](prod/nginx/truitteur) → `/etc/nginx/sites-available/truitteur` (lien dans `sites-enabled/`)
+- [`prod/setup-prod.sh`](prod/setup-prod.sh) : installation, création du compte, de la base et du secret, configuration de nginx
+- `/etc/truitteur/truitteur.env` : **non versionné** (contient le mot de passe de la base)
+
+#### Tests de validation
+| Test | Résultat attendu | Résultat |
+|------|------------------|----------|
+| `java -version` | OpenJDK 17 | ✅ 17.0.21.1 |
+| `psql --version` | PostgreSQL 15 | ✅ 15.20 |
+| `sudo nginx -v` | nginx installé | ✅ 1.22.1 |
+| `ss -tlnp` : PostgreSQL | Local uniquement | ✅ `127.0.0.1:5432` et `[::1]:5432` |
+| `ss -tlnp` : nginx | Port 80 | ✅ `0.0.0.0:80` |
+| Connexion à la base avec le compte `truitteur` | OK | ✅ `current_user = truitteur` |
+| `curl -sI http://127.0.0.1` | 502 (pas encore d'application), version masquée, en-têtes de sécurité | ✅ |
+
+<details>
+<summary>Sorties des tests</summary>
+
+```
+lucien@truitteur-prod:~$ java -version
+openjdk version "17.0.21.1" 2026-11-17
+OpenJDK Runtime Environment (build 17.0.21.1+2-1-deb12u1-Debian)
+OpenJDK 64-Bit Server VM (build 17.0.21.1+2-1-deb12u1-Debian, mixed mode, sharing)
+lucien@truitteur-prod:~$ psql --version
+psql (PostgreSQL) 15.20 (Debian 15.20-0+deb12u1)
+
+lucien@truitteur-prod:~$ sudo ss -tlnp | grep -E ':(80|5432|8080)\b'
+LISTEN 0      244        127.0.0.1:5432      0.0.0.0:*    users:(("postgres",pid=3233,fd=6))
+LISTEN 0      511          0.0.0.0:80        0.0.0.0:*    users:(("nginx",pid=3584,fd=5),("nginx",pid=3583,fd=5),("nginx",pid=1770,fd=5))
+LISTEN 0      244            [::1]:5432         [::]:*    users:(("postgres",pid=3233,fd=5))
+
+lucien@truitteur-prod:~$ sudo bash -c 'source /etc/truitteur/truitteur.env; PGPASSWORD=$SPRING_DATASOURCE_PASSWORD psql -h 127.0.0.1 -U truitteur -d truitteur -c "select current_user, version();"'
+ current_user |                                                       version
+--------------+---------------------------------------------------------------------------------------------------------------------
+ truitteur    | PostgreSQL 15.20 (Debian 15.20-0+deb12u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit
+(1 row)
+
+lucien@truitteur-prod:~$ curl -sI http://127.0.0.1
+HTTP/1.1 502 Bad Gateway
+Server: nginx
+Content-Type: text/html
+Content-Length: 150
+Connection: keep-alive
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: geolocation=(), camera=(), microphone=()
+```
+</details>
+
+Le **502 Bad Gateway** est attendu : nginx fonctionne et transmet bien les requêtes vers `127.0.0.1:8080`, mais l'application n'y est pas encore déployée.
+
+#### Problème rencontré
+`nginx -v` renvoyait `command not found` alors que le paquet était installé : sur Debian, nginx est dans `/usr/sbin`, qui n'est pas dans le `PATH` des utilisateurs non privilégiés. Il faut utiliser `sudo nginx -v`.
 
 ## Sources
 

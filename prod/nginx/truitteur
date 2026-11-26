@@ -1,0 +1,36 @@
+# /etc/nginx/sites-available/truitteur  (lien dans sites-enabled/)
+upstream truitteur_app {
+    server 127.0.0.1:8080;   # l'application Spring Boot, jamais exposée directement
+    keepalive 16;
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+
+    client_max_body_size 5m;
+
+    # En-têtes de sécurité HTTP
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+
+    # Fichiers cachés (.git, .env...) et endpoints techniques Spring interdits
+    location ~ /\. { deny all; }
+    location /actuator { deny all; }
+
+    location / {
+        proxy_pass http://truitteur_app;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    access_log /var/log/nginx/truitteur.access.log;
+    error_log  /var/log/nginx/truitteur.error.log;
+}
