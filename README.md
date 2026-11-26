@@ -53,7 +53,7 @@ _Schéma d'architecture à ajouter._
 | SSH | Validé (prod) | Lucien |
 | Iptables | À faire | Lucien |
 | Prod | À faire | Lucien |
-| Serveur CI/CD | À faire | Lucien / Ayoub |
+| Serveur CI/CD | Commencé (VM créée) | Ayoub |
 | Jenkins | À faire | Ayoub |
 | Sonar | À faire | Ayoub |
 | Nexus | À faire | Ayoub |
@@ -145,16 +145,6 @@ Vérification après création (connexion SSH avec la clé, puis `cat /etc/os-re
 
 Le script [`prod/creer-vm-azure.sh`](prod/creer-vm-azure.sh) permet de recréer la VM à l'identique.
 
-#### Pourquoi Debian 12 ?
-- **Les versions demandées par le sujet sont dans les dépôts officiels** : Debian 12 fournit directement OpenJDK 17 et PostgreSQL 15. Debian 13 fournit des versions plus récentes (Java 21, PostgreSQL 17) et nous obligerait à ajouter des dépôts tiers, ce qui élargit la chaîne de confiance ;
-- **Toujours maintenue** : le support standard de Debian 12 s'est terminé en juillet 2026, mais elle reçoit les correctifs de sécurité de l'équipe LTS jusqu'au 30 juin 2028 [2]. Cela couvre largement la durée du projet ;
-- **Distribution stable et répandue** sur les serveurs, publiée officiellement par Debian sur Azure.
-
-#### Pourquoi sans interface graphique ?
-- **Surface d'attaque réduite** : moins de paquets installés, donc moins de failles potentielles et moins de mises à jour ;
-- **Moins de ressources consommées**, laissées aux services du projet ;
-- **Administration uniquement par SSH**, ce qui est la norme pour un serveur et permet de tout scripter (réinstallation rapide).
-- 
 #### Création de la VM CI/CD
 
 J’ai créé la VM CI/CD sur Azure for Students, en France Central. Elle tourne sous Debian 12 sur une instance Spot avec 2 vCPU, 16 Gio de RAM et un SSD de 64 Gio.
@@ -164,6 +154,16 @@ J’ai configuré l’accès par clé SSH et limité le port 22 à mon adresse I
 ![Test de connexion SSH à la VM CI/CD](captures/08-ssh-cicd-verification.png)
 
 La prochaine étape sera de vérifier les réglages SSH sur Debian, puis de configurer iptables.
+
+#### Pourquoi Debian 12 ?
+- **Les versions demandées par le sujet sont dans les dépôts officiels** : Debian 12 fournit directement OpenJDK 17 et PostgreSQL 15. Debian 13 fournit des versions plus récentes (Java 21, PostgreSQL 17) et nous obligerait à ajouter des dépôts tiers, ce qui élargit la chaîne de confiance ;
+- **Toujours maintenue** : le support standard de Debian 12 s'est terminé en juillet 2026, mais elle reçoit les correctifs de sécurité de l'équipe LTS jusqu'au 30 juin 2028 [2]. Cela couvre largement la durée du projet ;
+- **Distribution stable et répandue** sur les serveurs, publiée officiellement par Debian sur Azure.
+
+#### Pourquoi sans interface graphique ?
+- **Surface d'attaque réduite** : moins de paquets installés, donc moins de failles potentielles et moins de mises à jour ;
+- **Moins de ressources consommées**, laissées aux services du projet ;
+- **Administration uniquement par SSH**, ce qui est la norme pour un serveur et permet de tout scripter (réinstallation rapide).
 ### Étape 1 – Sécurisation de l'accès SSH (serveur de production)
 
 **Statut : validé sur `truitteur-prod`.**
